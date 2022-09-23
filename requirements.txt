@@ -1,0 +1,5 @@
+torchaudio
+speechbrain
+nlp2
+tqdm
+ffmpeg-python
