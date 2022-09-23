@@ -14,7 +14,7 @@ apt-get -qq install -y ffmpeg
 
 `python convert_format_sampling.py -s /audio_folder/ -w 30`
 
-### sid and speech enhancement
+### Language Identification (LID) and speech enhancement
 
 ```python
 from lid_enhancement import AudioLIDEnhancer
