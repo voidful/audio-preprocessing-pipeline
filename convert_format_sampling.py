@@ -26,7 +26,6 @@ if __name__ == "__main__":
     parser.add_argument("-w", "--workers", type=int, default=30, help="Number of workers")
     args = parser.parse_args()
     config = vars(args)
-    batch = config['batch']
     source_dir = config['src']
     result_jsons = []
     for i in tqdm(nlp2.get_files_from_dir(source_dir, match='webm')):
