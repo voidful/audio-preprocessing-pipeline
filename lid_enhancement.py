@@ -29,17 +29,22 @@ class AudioLIDEnhancer:
 
         # Speech enhancement model
         self.enhance_model = master64()
+        self.enhance_model = self.enhance_model.to(self.device)
+        self.enhance_model.eval()
 
         # LID model
         self.silero_model, self.silero_lang_dict, self.silero_lang_group_dict, silero_utils = torch.hub.load(
             repo_or_dir='snakers4/silero-vad',
             model='silero_lang_detector_95',
-            onnx=True)
+            onnx=False)
         self.silero_get_language_and_group, self.silero_read_audio = silero_utils
 
         # LID model
         self.voxlingua_language_id = EncoderClassifier.from_hparams(source="TalTechNLP/voxlingua107-epaca-tdnn",
+                                                                    run_opts={"device": self.device},
                                                                     savedir="tmp")
+        self.voxlingua_language_id = self.voxlingua_language_id.to(self.device)
+        self.voxlingua_language_id.eval()
 
     # performance language identification on input audio,
     # if the language is one of the possible language, perform language enhancement
@@ -75,7 +80,8 @@ class AudioLIDEnhancer:
                 lid_result.extend([i[0].split(',')[0] for i in languages])
 
             if self.lid_voxlingua_enable:
-                prediction = self.voxlingua_language_id.classify_batch(chunks[s_i].squeeze())
+                self.voxlingua_language_id = self.voxlingua_language_id.to(self.device)
+                prediction = self.voxlingua_language_id.classify_batch(chunks[s_i].squeeze().to(self.device))
                 values, indices = torch.topk(prediction[0], self.lid_return_n, dim=-1)
                 lid_result.extend(self.voxlingua_language_id.hparams.label_encoder.decode_torch(indices)[0])
 
@@ -109,7 +115,6 @@ class AudioLIDEnhancer:
                 enhance_result.append(torch.masked_select(estimate, masks).detach().cpu())
 
             denoise = torch.cat(enhance_result, dim=-1).unsqueeze(0)
-            print(denoise.shape, out.shape)
 
             p = Path(filepath)
             write(denoise, str(Path(p.parent, f"{p.stem}_enhanced{p.suffix}")), sr)
