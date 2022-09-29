@@ -1,3 +1,4 @@
+import gc
 from pathlib import Path
 
 import torch
@@ -20,7 +21,6 @@ class AudioLIDEnhancer:
         self.dry_wet = dry_wet
         self.sampling_rate = sampling_rate
         self.chunk_sec = chunk_sec
-        self.max_batch = max_batch
         self.chunk_length = sampling_rate * chunk_sec
         self.lid_return_n = lid_return_n
         self.lid_silero_enable = lid_silero_enable
@@ -31,6 +31,7 @@ class AudioLIDEnhancer:
         self.enhance_model = master64()
         self.enhance_model = self.enhance_model.to(self.device)
         self.enhance_model.eval()
+        self.max_batch = self.get_max_batch()
 
         # LID model
         self.silero_model, self.silero_lang_dict, self.silero_lang_group_dict, silero_utils = torch.hub.load(
@@ -45,6 +46,23 @@ class AudioLIDEnhancer:
                                                                     savedir="tmp")
         self.voxlingua_language_id = self.voxlingua_language_id.to(self.device)
         self.voxlingua_language_id.eval()
+
+    def get_max_batch(self):
+        print("calculating max batch size...")
+        batch = 1
+        with torch.no_grad():
+            try:
+                while True:
+                    self.enhance_model(torch.rand([batch, self.chunk_length]).cuda())
+                    batch += 1
+                    gc.collect()
+                    torch.cuda.empty_cache()
+            except:
+                pass
+
+        batch = max(batch - 5, 1)
+        print("maximum batch size will be", batch)
+        return batch
 
     # performance language identification on input audio,
     # if the language is one of the possible language, perform language enhancement
