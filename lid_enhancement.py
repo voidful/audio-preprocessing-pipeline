@@ -3,6 +3,7 @@ from pathlib import Path
 
 import torch
 import torchaudio
+from collections import Counter
 from speechbrain.pretrained import EncoderClassifier
 
 import denoiser
@@ -28,24 +29,27 @@ class AudioLIDEnhancer:
         self.enable_enhancement = enable_enhancement
 
         # Speech enhancement model
-        self.enhance_model = master64()
-        self.enhance_model = self.enhance_model.to(self.device)
-        self.enhance_model.eval()
-        self.max_batch = self.get_max_batch()
+        if enable_enhancement:
+            self.enhance_model = master64()
+            self.enhance_model = self.enhance_model.to(self.device)
+            self.enhance_model.eval()
+            self.max_batch = self.get_max_batch()
 
         # LID model
-        self.silero_model, self.silero_lang_dict, self.silero_lang_group_dict, silero_utils = torch.hub.load(
-            repo_or_dir='snakers4/silero-vad',
-            model='silero_lang_detector_95',
-            onnx=False)
-        self.silero_get_language_and_group, self.silero_read_audio = silero_utils
+        if lid_silero_enable:
+            self.silero_model, self.silero_lang_dict, self.silero_lang_group_dict, silero_utils = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_lang_detector_95',
+                onnx=False)
+            self.silero_get_language_and_group, self.silero_read_audio = silero_utils
 
         # LID model
-        self.voxlingua_language_id = EncoderClassifier.from_hparams(source="TalTechNLP/voxlingua107-epaca-tdnn",
-                                                                    run_opts={"device": self.device},
-                                                                    savedir="tmp")
-        self.voxlingua_language_id = self.voxlingua_language_id.to(self.device)
-        self.voxlingua_language_id.eval()
+        if lid_voxlingua_enable:
+            self.voxlingua_language_id = EncoderClassifier.from_hparams(source="TalTechNLP/voxlingua107-epaca-tdnn",
+                                                                        run_opts={"device": self.device},
+                                                                        savedir="tmp")
+            self.voxlingua_language_id = self.voxlingua_language_id.to(self.device)
+            self.voxlingua_language_id.eval()
 
     def get_max_batch(self):
         print("calculating max batch size...")
@@ -83,39 +87,48 @@ class AudioLIDEnhancer:
             chunks[concat_index] = torch.cat(chunks[-2:], dim=-1)
             chunks = chunks[:concat_index + 1]
 
-        hit = 0
-        audio_langs = []
+        # total probability
+        audio_langs = Counter({})
 
         # randomly select chunk for language detection
         for s_i in list(shuffle_gen(len(chunks)))[:max_trial]:
-            lid_result = []
+            # segment probability
+            lid_result = Counter({})
             if self.lid_silero_enable:
                 languages, language_groups = self.silero_get_language_and_group(chunks[s_i].squeeze(),
                                                                                 self.silero_model,
                                                                                 self.silero_lang_dict,
                                                                                 self.silero_lang_group_dict,
                                                                                 top_n=self.lid_return_n)
-                lid_result.extend([i[0].split(',')[0] for i in languages])
+                # add the ('2 char lang_code': probability) pair to lid_result
+                for l in languages:
+                    lang_code = l[0].split(',')[0][:2]
+                    if lang_code in lid_result:
+                        lid_result[lang_code] += l[-1]
+                    else:
+                        lid_result[lang_code] = l[-1]
 
             if self.lid_voxlingua_enable:
                 self.voxlingua_language_id = self.voxlingua_language_id.to(self.device)
                 prediction = self.voxlingua_language_id.classify_batch(chunks[s_i].squeeze().to(self.device))
                 values, indices = torch.topk(prediction[0], self.lid_return_n, dim=-1)
-                lid_result.extend(self.voxlingua_language_id.hparams.label_encoder.decode_torch(indices)[0])
+                # add the ('2 char lang_code': probability) pair to lid_result
+                for i, l in enumerate(self.voxlingua_language_id.hparams.label_encoder.decode_torch(indices)[0]):
+                    lang_code = l[:2]
+                    if lang_code in lid_result:
+                        lid_result[lang_code] += values[0][i].item()
+                    else:
+                        lid_result[lang_code] = values[0][i].item()
 
-            detected_langs = set(lid_result) & set(possible_langs)
+            # add segment probability to total probability
             if len(possible_langs) == 0:
-                audio_langs.extend(lid_result)
+                audio_langs += lid_result
             else:
-                audio_langs.extend(list(detected_langs))
-            if detected_langs:
-                hit += 1
-            if hit >= hit_times:
-                break
+                audio_langs += dict(filter(lambda x: x[0] in possible_langs, lid_result.items()))
+        
+        audio_lang = max(audio_langs, key=audio_langs.get, default='na')
 
-        audio_lang = max(set(audio_langs), key=audio_langs.count)
-
-        if self.enable_enhancement and (len(possible_langs) == 0 or hit >= hit_times):
+        if self.enable_enhancement and (len(possible_langs) == 0):
             batch_data = []
             cache_batch = []
             for c in chunks:
